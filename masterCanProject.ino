@@ -112,11 +112,12 @@ void spiCanInterrupt() {
 void i2cInterruptLogic() {
   Serial.write("entering interrupt I2C logic\n");
   i2cGpiosValues = i2c_io.Read(GPIO);  // Reading the gpio actually clear the flag
-  
   switch(oldState) {
     case UNDEFINED_STATE:
-      if ( i2cGpiosValues & 0b00001000 ) {  // TODO check if condition correct
+      if ( (i2cGpiosValues | 0b11110111) == 0b11110111 ) {  // TODO check if condition correct
         state = MASTER;
+      } else {
+        state = UNDEFINED_STATE;
       }
       break;
     case NORMAL_MODE:
@@ -127,6 +128,7 @@ void i2cInterruptLogic() {
     case MASTER:
       state = MASTER;
     default:
+     state = oldState;
       Serial.write("problem I2C interrupt");
       break;
   }
