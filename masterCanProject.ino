@@ -37,8 +37,11 @@ volatile uint8_t i2cGpiosValues;
 volatile uint8_t SpiGpiosValues; 
 uint8_t txstatus;
 volatile uint8_t opmode;
-uint8_t message[8];
+volatile uint8_t idsList[8];
 uint16_t msgID;
+int storedIdsNumber = 1;
+bool alreadyScanned = false;
+unsigned long startTime;
 
 void spiCanInterrupt();
 void i2cInterrupt();
@@ -46,16 +49,20 @@ void scanNetwork();
 
 /********************** SETUP **********************/
 void setup() {
+  
+  for(int i=0;i<8;i++) {
+    idsList[i]=0;
+  }
 
   //  SETUP SPI INTERRUPTS
-  spi_io.Write(IOCON, VAL23S08_IOCON);  // Sets defaults for MCP23S08, in particular puts interrupt output open-drain
+  spi_io.Write(IOCON, VAL23S08_IOCON | 0b00000010);  // Sets defaults for MCP23S08, in particular puts interrupt output open-drain
   spi_io.Write(IODIR, 0x0F);   // sets port direction for individual bits
   spi_io.Write(INTCON, 0x0F); // activate interrupts on the inputs (buttons)
   spi_io.Write(INTCON, 0x0F);  // interrupts are triggered when compared to DEFVAL values, not on pin-change
   spi_io.Write(DEFVAL, 0x0F);  // DEFVAL  sets the default values for the pin (high state here). Interrupts occurs on a low state
   
   //  SETUP I2C INTERRUPTS
-  i2c_io.Write(IOCON, VAL23S08_IOCON);  // Sets defaults for MCP23S08, in particular puts interrupt output open-drain
+  i2c_io.Write(IOCON, VAL23S08_IOCON | 0b00000010);  // Sets defaults for MCP23S08, in particular puts interrupt output open-drain
   i2c_io.Write(IODIR, 0x0F);   // sets port direction for individual bits
   i2c_io.Write(GPIO,0xF0);
   i2c_io.Write(INTCON, 0x0F);  // interrupts are triggered when compared to DEFVAL values, not on pin-change
@@ -87,7 +94,13 @@ void setup() {
   can_dev.write(CNF2,0b10110001);  //BLTMODE = 1, SAM = 0, PHSEG = 6, PRSEG = 1
   can_dev.write(CNF3, 0x05);  // WAKFIL = 0, PHSEG2 = 5
   
-
+  // SETUP MASKS / FILTERS FOR CAN
+  canutil.setRxOperatingMode(1, 1, 0);  // standard ID messages only  and rollover
+  canutil.setAcceptanceFilter(0x102, 0, 0, 2); // 0 <= stdID <= 2047, 0 <= extID <= 262143, 1 = extended, filter# 0
+  canutil.setAcceptanceFilter(0x101, 0, 0, 1); // 0 <= stdID <= 2047, 0 <= extID <= 262143, 1 = extended, filter# 0
+  canutil.setAcceptanceFilter(0x100, 0, 0, 0); // 0 <= stdID <= 2047, 0 <= extID <= 262143, 1 = extended, filter# 1
+  canutil.setAcceptanceMask(0xFFFF, 0x00000000, 0); // 0 <= stdID <= 2047, 0 <= extID <= 262143, buffer# 0
+  
   canutil.setOpMode(0); // sets normal mode 
   opmode = canutil.whichOpMode();
 
@@ -97,8 +110,8 @@ void setup() {
   Serial.write("leaving setup\n");
   
     /************** SETUP INTERRUPTS ****************/
-  //attachInterrupt(I2C_INTERRUPT_PIN,i2cInterruptCallback,HIGH);
- // attachInterrupt(SPI_CAN_INTERRUPT_PIN,spiCanInterrupt,LOW);
+  attachInterrupt(I2C_INTERRUPT_PIN,i2cInterruptCallback,FALLING);
+  attachInterrupt(SPI_CAN_INTERRUPT_PIN,spiCanInterrupt,FALLING);
   
 }
 
@@ -117,7 +130,14 @@ void loop() {
       break;
       
     case MASTER:
-      scanNetwork();
+      if(!alreadyScanned) {
+        scanNetwork();
+        alreadyScanned = true;
+        startTime = millis();
+      } else if ((millis() - startTime) > 2000) {
+        oldState = MASTER;
+        state = NORMAL_MODE;
+      }
       Serial.write("master\n");  // debug indicator
       break;
       
@@ -129,18 +149,56 @@ void loop() {
        Serial.write("huge problem !\n");
        break;
   }
-  
-  if(digitalRead(3) == LOW) {
-    oldState = state;
-    state = I2C_INTERRUPT;
-  }
 }
 
 /************* INTERRUPT CALLBACK SPI/CAN ***************/
 void spiCanInterrupt() {
+  int recSize = canutil.whichRxDataLength(0); // checks the number of bytes received in buffer 0 (max = 8) 
+  msgID = canutil.whichStdID(0);
+  
+  switch(state) {
+    case UNDEFINED_STATE:
+    if(msgID == 0x100) {  // TODO ANSWER WITH ACKNOWLEDGE
+      uint8_t message[8];
+      message[0] = OWN_ID;
+      uint16_t message_id = 0x101;
+      canutil.setTxBufferID(message_id,0,0,0);  // sets the message ID, specifies standard message (i.e. short ID) with buffer 0
+      canutil.setTxBufferDataField(message, 0);   // fills TX buffer 
+      canutil.messageTransmitRequest(0,1,2);  // requests transmission of buffer 0 with highest priority*/
+      oldState = state;
+      state = SLAVE;
+    }
+       break;
+       
+    case SLAVE:
+    if(msgID == 0x102) {
+    for (int i = 0; i < recSize; i++) { // gets the bytes
+      idsList[i] = canutil.receivedDataValue(0, i);
+    }
+      oldState = state;
+      state = NORMAL_MODE;
+    }
+      break;
+      
+    case NORMAL_MODE:  // TODO : ALL THE WEIRD SHIT
+       break;
+       
+    case MASTER:
+    if(msgID == 0x101) {
+      idsList[storedIdsNumber++] = canutil.receivedDataValue(0, 0);
+      oldState = state;
+      state = NORMAL_MODE;
+    }
+       break;
+  }
 }
 
 /************* INTERRUPT "CALLBACK" I2C ***************/
+void i2cInterruptCallback() {
+    oldState = state;
+    state = I2C_INTERRUPT;
+}
+
 void i2cInterruptLogic() {
   Serial.write("entering interrupt I2C logic\n");
   i2cGpiosValues = i2c_io.Read(GPIO);  // Reading the gpio actually clear the flag
@@ -168,6 +226,8 @@ void i2cInterruptLogic() {
 }
 
 void scanNetwork() {
+  uint8_t message[8];
+  idsList[0] = OWN_ID;
     for(unsigned int i= 1;i <= 47 ;i++) {
   uint16_t message_id = 0x100;
   canutil.setTxBufferID(message_id,0,0,0);  // sets the message ID, specifies standard message (i.e. short ID) with buffer 0
@@ -185,15 +245,4 @@ void scanNetwork() {
   message[0]++;
     }
     message[0]=0;
-/*
-   message[0]++;
-   canutil.setTxBufferID(i,0,0,0);
-      canutil.setTxBufferDataField(message, 0);
-   canutil.messageTransmitRequest(0,1,3);  // requests transmission of buffer 0 with highest priority
-  */
-
- // waits for no error condition   }
-  // void Canutil::setTxBufferDataLength(uint8_t rtr,  uint8_t length, uint8_t buffer)
-  // void Canutil::setTxBufferID(unsigned int stdID, unsigned long extID, uint8_t extended, uint8_t buffer)
-  // void Canutil::setTxBufferDataField(uint8_t data[8], uint8_t buffer)
 }
