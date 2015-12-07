@@ -11,6 +11,8 @@
 #define SLAVE 1
 #define MASTER 2
 #define NORMAL_MODE 3
+#define RECEIVED_WAKE_UP 4
+#define RECEIVED_LIST 5
 volatile int state = UNDEFINED_STATE;
 volatile int oldState = UNDEFINED_STATE;
 
@@ -21,13 +23,12 @@ volatile int oldState = UNDEFINED_STATE;
 #define SPI_CAN_INTERRUPT_PIN 0
 
 /************ DEFINE THE NODE ID *********************/
-#define OWN_ID 30
-volatile const int own_id = 30;
+#define OWN_ID 5
 
 /**************** SETUP THE I2C/SPI/CAN OBJECTS ****************/
 MCP23008 i2c_io(MCP23008_ADDR);         // Init MCP23008
 MCP23S08 spi_io(MCP23S08_ADDR, 10);        // Init MCP23S08
-MCP2510  can_dev(9); // defines pb1 (arduino pin9) as the _CS pin for MCP2510
+MCP2510  can_dev (9); // defines pb1 (arduino pin9) as the _CS pin for MCP2510
 Canutil  canutil(can_dev);
 
 /************* DECLARE VOLATILE VARIABLE FOR THE GPIOS RAEADS, AND FORWARD DECLARE FUNCTIONS ***************/
@@ -36,17 +37,19 @@ volatile uint8_t SpiGpiosValues;
 uint8_t txstatus;
 volatile uint8_t opmode;
 volatile uint8_t idsList[8];
-uint16_t msgID;
+volatile uint16_t msgID;
+volatile int recSize;
 int storedIdsNumber = 1;
 bool alreadyScanned = false;
 unsigned long startTime;
-volatile int idReceived;
+volatile int dataReceived[8];
 
 void spiCanInterrupt();
 void i2cInterruptCallback();
 void scanNetwork();
 void i2cInterruptLogic();
-
+bool handleWakeUp();
+bool getIdsList();
 /********************** SETUP **********************/
 void setup() {
 
@@ -122,16 +125,15 @@ void loop() {
       i2cInterruptLogic();
       break;
     case UNDEFINED_STATE:
-      Serial.write("undefined\n"); // ebug indicator
+      if (state != oldState) Serial.write("undefined\n"); // ebug indicator
       break;
     case SLAVE:
       //TODO
-      Serial.write("slave\n");  // debug indicator
-      Serial.println(idReceived);
+      //if (state != oldState) Serial.write("slave\n"); // debug indicator
       break;
 
     case MASTER:
-      Serial.write("master\n");  // debug indicator
+      if (state != oldState) Serial.write("master\n"); // debug indicator
       if (!alreadyScanned) {
         scanNetwork();
         alreadyScanned = true;
@@ -143,53 +145,54 @@ void loop() {
       break;
 
     case NORMAL_MODE:
-      Serial.write("normal mode\n");  // debug indicator
-      Serial.println(idsList[1]);
+      if (state != oldState)  Serial.write("normal mode\n"); // debug indicator
+      for (int i = 0; i < 8; i++) {
+        Serial.println(idsList[i]);
+      }
+      break;
+    case RECEIVED_WAKE_UP:
+      if (handleWakeUp()) {
+        oldState = state;
+        state = SLAVE;
+      } else {
+        int temp = state;
+        state = oldState;
+        oldState = temp;
+      }
+      if (state != oldState) Serial.write("received wkae up mesg\n"); // debug indicator
+      break;
+      
+    case RECEIVED_LIST:
+      Serial.println(msgID);
+      if (getIdsList()) {
+        oldState = state;
+        state = NORMAL_MODE;
+      } else { 
+        oldState = state;
+        state = SLAVE;        
+      }
       break;
     default:
-      Serial.write("huge problem !\n");
+      if (state != oldState) Serial.write("huge problem !\n");
       break;
   }
 }
 
 /************* INTERRUPT CALLBACK SPI/CAN ***************/
 void spiCanInterrupt() {
-  int recSize = canutil.whichRxDataLength(0); // checks the number of bytes received in buffer 0 (max = 8)
-  msgID = canutil.whichStdID(0);
 
   switch (state) {
     case UNDEFINED_STATE:
-    
-        idReceived = canutil.receivedDataValue(0, 0);
-        for (int i = 1; i < recSize; i++) { // gets the bytes
-          canutil.receivedDataValue(0, i);
-        }
-      Serial.println(idReceived);
-      Serial.println(OWN_ID);
-      if (msgID == 0x100 /*&& idReceived == OWN_ID*/ ) { // TODO ANSWER WITH ACKNOWLEDGE
-        Serial.write("Received own ID !");
-        uint8_t message[8];
-        message[0] = OWN_ID;
-        uint16_t message_id = 0x101;
-        canutil.setTxBufferID(message_id, 0, 0, 0); // sets the message ID, specifies standard message (i.e. short ID) with buffer 0
-        canutil.setTxBufferDataField(message, 0);   // fills TX buffer
-        canutil.messageTransmitRequest(0, 1, 2); // requests transmission of buffer 0 with highest priority*/
-        oldState = state;
-        state = SLAVE;
-      }
+      oldState = state;
+      state = RECEIVED_WAKE_UP;
       break;
 
     case SLAVE:
-      if (msgID == 0x102) {
-        for (int i = 0; i < recSize; i++) { // gets the bytes
-          idsList[i] = canutil.receivedDataValue(0, i);
-        }
-        oldState = state;
-        state = NORMAL_MODE;
-      }
+      oldState = state;
+      state = RECEIVED_LIST;
       break;
 
-    case NORMAL_MODE:  // TODO : ALL THE WEIRD SHIT
+    case NORMAL_MODE:// TODO : ALL THE WEIRD SHIT
       break;
 
     case MASTER:
@@ -234,7 +237,7 @@ void i2cInterruptLogic() {
 
 void scanNetwork() {
   uint8_t message[8];
-  message[0]=1;
+  message[0] = 1;
   idsList[0] = OWN_ID;
   for (unsigned int i = 1; i <= 47 ; i++) {
     uint16_t message_id = 0x100;
@@ -258,3 +261,49 @@ void scanNetwork() {
   }
   message[0] = 0;
 }
+
+
+bool handleWakeUp() {
+  can_dev.write(CANINTF, 0x00);  // Clears all interrupts flags
+  recSize = canutil.whichRxDataLength(0); // checks the number of bytes received in buffer 0 (max = 8)
+  for (int i = 0; i < recSize; i++) { // gets the bytes
+    dataReceived[i] = canutil.receivedDataValue(0, i);
+  }
+  msgID = canutil.whichStdID(0);
+
+  Serial.println(dataReceived[0]);
+  Serial.println(OWN_ID);
+  if (msgID == 0x100 && dataReceived[0] == OWN_ID) { // TODO ANSWER WITH ACKNOWLEDGE
+    Serial.println("la valeur que l'on veut");
+    Serial.println(dataReceived[0]);
+    Serial.write("Received own ID !");
+    uint8_t message[8];
+    message[0] = OWN_ID;
+    uint16_t message_id = 0x101;
+    canutil.setTxBufferID(message_id, 0, 0, 0); // sets the message ID, specifies standard message (i.e. short ID) with buffer 0
+    canutil.setTxBufferDataField(message, 0);   // fills TX buffer
+    canutil.messageTransmitRequest(0, 1, 2); // requests transmission of buffer 0 with highest priority*/
+    return true;
+  }
+  return false;
+}
+
+bool getIdsList() {
+  can_dev.write(CANINTF, 0x00);  // Clears all interrupts flags
+  recSize = canutil.whichRxDataLength(0); // checks the number of bytes received in buffer 0 (max = 8)
+  for (int i = 0; i < recSize; i++) { // gets the bytes
+    dataReceived[i] = canutil.receivedDataValue(0, i);
+  }
+  msgID = canutil.whichStdID(0);
+
+
+  if (msgID == 0x102) {
+    for (int i = 0; i < recSize; i++) { // gets the bytes
+      idsList[i] = dataReceived[i];
+      Serial.println("coucou c est moi");
+    }
+    return true;
+  }
+  return false;
+}
+
