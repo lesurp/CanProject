@@ -21,7 +21,8 @@ volatile int oldState = UNDEFINED_STATE;
 #define SPI_CAN_INTERRUPT_PIN 0
 
 /************ DEFINE THE NODE ID *********************/
-#define OWN_ID 20
+#define OWN_ID 30
+volatile const int own_id = 30;
 
 /**************** SETUP THE I2C/SPI/CAN OBJECTS ****************/
 MCP23008 i2c_io(MCP23008_ADDR);         // Init MCP23008
@@ -39,6 +40,7 @@ uint16_t msgID;
 int storedIdsNumber = 1;
 bool alreadyScanned = false;
 unsigned long startTime;
+volatile int idReceived;
 
 void spiCanInterrupt();
 void i2cInterruptCallback();
@@ -125,6 +127,7 @@ void loop() {
     case SLAVE:
       //TODO
       Serial.write("slave\n");  // debug indicator
+      Serial.println(idReceived);
       break;
 
     case MASTER:
@@ -156,7 +159,13 @@ void spiCanInterrupt() {
 
   switch (state) {
     case UNDEFINED_STATE:
-      //int idReceived = canutil.receivedDataValue(0, 0);
+    
+        idReceived = canutil.receivedDataValue(0, 0);
+        for (int i = 1; i < recSize; i++) { // gets the bytes
+          canutil.receivedDataValue(0, i);
+        }
+      Serial.println(idReceived);
+      Serial.println(OWN_ID);
       if (msgID == 0x100 /*&& idReceived == OWN_ID*/ ) { // TODO ANSWER WITH ACKNOWLEDGE
         Serial.write("Received own ID !");
         uint8_t message[8];
@@ -225,6 +234,7 @@ void i2cInterruptLogic() {
 
 void scanNetwork() {
   uint8_t message[8];
+  message[0]=1;
   idsList[0] = OWN_ID;
   for (unsigned int i = 1; i <= 47 ; i++) {
     uint16_t message_id = 0x100;
@@ -241,7 +251,7 @@ void scanNetwork() {
       txstatus = txstatus + canutil.isMessagePending(0);   // checks transmission
     }
     while (txstatus != 0);
-    Serial.write("wrote with id n°100 with message: ");
+    Serial.write("wrote with id n100 with message: ");
     Serial.println(message[0]);
     delay(500);
     message[0]++;
