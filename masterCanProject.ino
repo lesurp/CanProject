@@ -4,6 +4,7 @@
 #include <Canutil.h>
 #include <Wire.h>
 #include <SPI.h>
+#include <LiquidCrystal.h>
 
 /********* VALUES USED FOR THE STATE MACHINE ************/
 #define I2C_INTERRUPT -1
@@ -13,6 +14,8 @@
 #define NORMAL_MODE 3
 #define RECEIVED_WAKE_UP 4
 #define RECEIVED_LIST 5
+#define SPI_INTERRUPT 6
+
 volatile int state = UNDEFINED_STATE;
 volatile int oldState = UNDEFINED_STATE;
 
@@ -23,17 +26,17 @@ volatile int oldState = UNDEFINED_STATE;
 #define SPI_CAN_INTERRUPT_PIN 0
 
 /************ DEFINE THE NODE ID *********************/
-#define OWN_ID 3
+#define OWN_ID 2
 
 /**************** SETUP THE I2C/SPI/CAN OBJECTS ****************/
 MCP23008 i2c_io(MCP23008_ADDR);         // Init MCP23008
 MCP23S08 spi_io(MCP23S08_ADDR, 10);        // Init MCP23S08
 MCP2510  can_dev (9); // defines pb1 (arduino pin9) as the _CS pin for MCP2510
 Canutil  canutil(can_dev);
-
+LiquidCrystal  lcd(15, 14, 4, 5, 6, 7);
 /************* DECLARE VOLATILE VARIABLE FOR THE GPIOS RAEADS, AND FORWARD DECLARE FUNCTIONS ***************/
 volatile uint8_t i2cGpiosValues;
-volatile uint8_t SpiGpiosValues;
+volatile uint8_t spiGpiosValues;
 uint8_t txstatus;
 volatile uint8_t opmode;
 volatile uint8_t idsList[8];
@@ -42,6 +45,10 @@ volatile int recSize;
 int storedIdsNumber = 1;
 volatile int canDataReceived[8];
 
+/////////// USED OR THE LCD
+int currentId = -1;
+int oldId = -1;
+
 void spiCanInterrupt();
 void i2cInterruptCallback();
 void scanNetwork();
@@ -49,6 +56,7 @@ void i2cInterruptLogic();
 bool handleWakeUp();
 bool getIdsList();
 void sendIdsList();
+void displayKeyboardSelection();
 /********************** SETUP **********************/
 void setup() {
 
@@ -56,17 +64,19 @@ void setup() {
     idsList[i] = 0;
   }
 
+  // SETUP UP LCD
+  lcd.begin(16, 2);
+
   //  SETUP SPI INTERRUPTS
   spi_io.Write(IOCON, VAL23S08_IOCON | 0b00000010);  // Sets defaults for MCP23S08, in particular puts interrupt output open-drain
   spi_io.Write(IODIR, 0x0F);   // sets port direction for individual bits
   spi_io.Write(INTCON, 0x0F); // activate interrupts on the inputs (buttons)
-  spi_io.Write(INTCON, 0x0F);  // interrupts are triggered when compared to DEFVAL values, not on pin-change
   spi_io.Write(DEFVAL, 0x0F);  // DEFVAL  sets the default values for the pin (high state here). Interrupts occurs on a low state
+  spi_io.Write(GPINTEN, 0x0F);  // activate interrupts on the inputs (buttons)
 
   //  SETUP I2C INTERRUPTS
   i2c_io.Write(IOCON, VAL23S08_IOCON | 0b00000010);  // Sets defaults for MCP23S08, in particular puts interrupt output open-drain
   i2c_io.Write(IODIR, 0x0F);   // sets port direction for individual bits
-  i2c_io.Write(GPIO, 0xF0);
   i2c_io.Write(INTCON, 0x0F);  // interrupts are triggered when compared to DEFVAL values, not on pin-change
   i2c_io.Write(DEFVAL, 0x0F);  // DEFVAL  sets the default values for the pin (high state here). Interrupts occurs on a low state
   i2c_io.Write(GPINTEN, 0x0F);  // activate interrupts on the inputs (buttons)
@@ -125,15 +135,18 @@ void loop() {
       break;
 
     case UNDEFINED_STATE:
-      if (state != oldState) Serial.write("undefined\n"); // ebug indicator
+      lcd.clear();
+      lcd.write("undefined state");
       break;
 
     case SLAVE:
-      Serial.println("slave");
+      lcd.clear();
+      lcd.write("slave");
       break;
 
     case MASTER:
-      if (state != oldState) Serial.write("master, gonna scan\n"); // debug indicator
+      lcd.clear();
+      lcd.write("slave");
       scanNetwork();
       delay(500);
       Serial.println("scanned, gonna send the list");
@@ -148,6 +161,7 @@ void loop() {
       for (int i = 0; i < 8; i++) {
         Serial.println(idsList[i]);
       }
+      displayKeyboardSelection();
       break;
 
     case RECEIVED_WAKE_UP:
@@ -172,12 +186,18 @@ void loop() {
       if (state != oldState) Serial.write("huge problem !\n");
       break;
   }
-      Serial.println("\nMsgID = \n");
-      Serial.println(msgID - 0x100);
+  Serial.println("\nMsgID = \n");
+  Serial.println(msgID - 0x100);
 }
 
 /************* INTERRUPT CALLBACK SPI/CAN ***************/
 void spiCanInterrupt() {
+  spiGpiosValues = spi_io.Read(GPIO);
+  if ( (spiGpiosValues & 0b00000111) != 0b00000111  && state == NORMAL_MODE) {
+      oldState = state;
+      state = SPI_INTERRUPT;
+  } else {
+
   recSize = canutil.whichRxDataLength(0); // checks the number of bytes received in buffer 0 (max = 8)
   for (int i = 0; i < recSize; i++) { // gets the bytes
     canDataReceived[i] = canutil.receivedDataValue(0, i);
@@ -208,11 +228,14 @@ void spiCanInterrupt() {
       }
       break;
 
+    case SPI_INTERRUPT:
+      handleSpiInterrupt();
     default:
       state = -100;
       break;
   }
   can_dev.write(CANINTF, 0x00);  // Clears all interrupts flags
+}
 }
 
 /************* INTERRUPT "CALLBACK" I2C ***************/
@@ -306,6 +329,7 @@ bool getIdsList() {
     idsList[i] = canDataReceived[i];
     Serial.println("coucou c est moi");
   }
+  storedIdsNumber = recSize;
   return true;
 }
 
@@ -332,4 +356,42 @@ void sendIdsList() {
 }
 
 
+void displayKeyboardSelection() {
+  currentId = map(analogRead(3), 0, 1024, 0, storedIdsNumber);
+  if (currentId != oldId) {
+    lcd.clear();
+    lcd.print(idsList[currentId]);
+    oldId = currentId;
+  }
 
+}
+
+void   handleSpiInterrupt() {
+  uint8_t interestingValues =  spiGpiosValues & 0x00000111;
+  if ( interestingValues > 3) {
+    // TODO SW6
+    uint16_t message_id = 0x200 + OWN_ID;
+  } else if (interestingValues > 1) {
+    //TODO SW7
+  } else {
+    //TODO SW8
+  }
+}
+
+void sendI2cLedsValues(uint16_t message_id) {
+    uint8_t message[8];
+
+  canutil.setTxBufferDataLength(0, storedIdsNumber , 0); // TX normal data, 1 byte long, with buffer 0
+  canutil.setTxBufferID(message_id, 0, 0, 0); // sets the message ID, specifies standard message (i.e. short ID) with buffer 0
+  canutil.setTxBufferDataField(message, 0);   // fills TX buffer
+
+  canutil.messageTransmitRequest(0, 1, 3); // requests transmission of buffer 0 with highest priority*/
+  do {
+    txstatus = 0;
+    txstatus = canutil.isTxError(0);  // checks tx error
+    txstatus = txstatus + canutil.isArbitrationLoss(0);  // checks for arbitration loss
+    txstatus = txstatus + canutil.isMessageAborted(0);  // ckecks for message abort
+    txstatus = txstatus + canutil.isMessagePending(0);   // checks transmission
+  }
+  while (txstatus != 0);
+}
