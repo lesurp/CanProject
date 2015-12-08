@@ -15,6 +15,7 @@
 #define RECEIVED_WAKE_UP 4
 #define RECEIVED_LIST 5
 #define SPI_INTERRUPT 6
+#define NORMAL_MODE_RECEIVED 7
 
 volatile int state = UNDEFINED_STATE;
 volatile int oldState = UNDEFINED_STATE;
@@ -26,7 +27,7 @@ volatile int oldState = UNDEFINED_STATE;
 #define SPI_CAN_INTERRUPT_PIN 0
 
 /************ DEFINE THE NODE ID *********************/
-#define OWN_ID 2
+#define OWN_ID 4
 
 /**************** SETUP THE I2C/SPI/CAN OBJECTS ****************/
 MCP23008 i2c_io(MCP23008_ADDR);         // Init MCP23008
@@ -43,7 +44,7 @@ volatile uint8_t idsList[8];
 volatile uint16_t msgID;
 volatile int recSize;
 int storedIdsNumber = 1;
-volatile int canDataReceived[8];
+volatile uint8_t canDataReceived[8];
 
 /////////// USED OR THE LCD
 int currentId = -1;
@@ -57,6 +58,8 @@ bool handleWakeUp();
 bool getIdsList();
 void sendIdsList();
 void displayKeyboardSelection();
+void sendI2cButtonsValues(uint8_t opCode);
+void   handleSpiInterrupt();
 /********************** SETUP **********************/
 void setup() {
 
@@ -146,7 +149,7 @@ void loop() {
 
     case MASTER:
       lcd.clear();
-      lcd.write("slave");
+      lcd.write("master");
       scanNetwork();
       delay(500);
       Serial.println("scanned, gonna send the list");
@@ -194,48 +197,56 @@ void loop() {
 void spiCanInterrupt() {
   spiGpiosValues = spi_io.Read(GPIO);
   if ( (spiGpiosValues & 0b00000111) != 0b00000111  && state == NORMAL_MODE) {
-      oldState = state;
-      state = SPI_INTERRUPT;
+    oldState = state;
+    state = SPI_INTERRUPT;
   } else {
 
-  recSize = canutil.whichRxDataLength(0); // checks the number of bytes received in buffer 0 (max = 8)
-  for (int i = 0; i < recSize; i++) { // gets the bytes
-    canDataReceived[i] = canutil.receivedDataValue(0, i);
-  }
-  msgID = canutil.whichStdID(0);
+    recSize = canutil.whichRxDataLength(0); // checks the number of bytes received in buffer 0 (max = 8)
+    for (int i = 0; i < recSize; i++) { // gets the bytes
+      canDataReceived[i] = canutil.receivedDataValue(0, i);
+    }
+    msgID = canutil.whichStdID(0);
 
-  switch (state) {
-    case UNDEFINED_STATE:
-      if (msgID == 0x100) {
+    switch (state) {
+      case UNDEFINED_STATE:
+        if (msgID == 0x100) {
+          oldState = state;
+          state = RECEIVED_WAKE_UP;
+        }
+        break;
+
+      case SLAVE:
+        if (msgID == 0x102) {
+          oldState = state;
+          state = RECEIVED_LIST;
+        }
+        break;
+
+      case NORMAL_MODE:// TODO : ALL THE WEIRD SHIT
         oldState = state;
-        state = RECEIVED_WAKE_UP;
-      }
-      break;
+        state = NORMAL_MODE_RECEIVED;
+        break;
 
-    case SLAVE:
-      if (msgID == 0x102) {
-        oldState = state;
-        state = RECEIVED_LIST;
-      }
-      break;
+      case MASTER:
+        if (msgID == 0x101) {
+          idsList[storedIdsNumber++] = canutil.receivedDataValue(0, 0);
+        }
+        break;
 
-    case NORMAL_MODE:// TODO : ALL THE WEIRD SHIT
-      break;
+      case SPI_INTERRUPT:
+        handleSpiInterrupt();
+        break;
 
-    case MASTER:
-      if (msgID == 0x101) {
-        idsList[storedIdsNumber++] = canutil.receivedDataValue(0, 0);
-      }
-      break;
+      case NORMAL_MODE_RECEIVED:
+        handleNormalModeMessage();
+        break;
 
-    case SPI_INTERRUPT:
-      handleSpiInterrupt();
-    default:
-      state = -100;
-      break;
+      default:
+        state = -100;
+        break;
+    }
+    can_dev.write(CANINTF, 0x00);  // Clears all interrupts flags
   }
-  can_dev.write(CANINTF, 0x00);  // Clears all interrupts flags
-}
 }
 
 /************* INTERRUPT "CALLBACK" I2C ***************/
@@ -370,19 +381,25 @@ void   handleSpiInterrupt() {
   uint8_t interestingValues =  spiGpiosValues & 0x00000111;
   if ( interestingValues > 3) {
     // TODO SW6
-    uint16_t message_id = 0x200 + OWN_ID;
+
   } else if (interestingValues > 1) {
     //TODO SW7
+    uint8_t opCode = 0x01;
+    sendI2cButtonsValues(opCode);
   } else {
     //TODO SW8
+    uint8_t opCode = 0x00;
+    sendI2cButtonsValues(opCode);
   }
 }
 
-void sendI2cLedsValues(uint16_t message_id) {
-    uint8_t message[8];
-
-  canutil.setTxBufferDataLength(0, storedIdsNumber , 0); // TX normal data, 1 byte long, with buffer 0
-  canutil.setTxBufferID(message_id, 0, 0, 0); // sets the message ID, specifies standard message (i.e. short ID) with buffer 0
+void sendI2cButtonsValues(uint8_t opCode) {
+  uint8_t message[8];
+  message[0] = idsList[currentId];
+  message[1] = opCode;
+  message[2] = i2c_io.Read(GPIO);
+  canutil.setTxBufferDataLength(0, 3 , 0); // TX normal data, 1 byte long, with buffer 0
+  canutil.setTxBufferID(0x200, 0, 0, 0); // sets the message ID, specifies standard message (i.e. short ID) with buffer 0
   canutil.setTxBufferDataField(message, 0);   // fills TX buffer
 
   canutil.messageTransmitRequest(0, 1, 3); // requests transmission of buffer 0 with highest priority*/
@@ -394,4 +411,33 @@ void sendI2cLedsValues(uint16_t message_id) {
     txstatus = txstatus + canutil.isMessagePending(0);   // checks transmission
   }
   while (txstatus != 0);
+}
+
+
+void handleNormalModeMessage() {
+  if ( canDataReceived[0] != OWN_ID ) {  // 0 = recipioent node id = our own id
+    return;
+  }
+  uint16_t sender = msgID - 0x200;
+
+  switch (canDataReceived[1]) { // 1 = opCode = cquon fait
+    case 0x00:
+      // TODO HANDLE WRITE TO SPI LEDS
+      uint8_t newLedsValues;
+      newLedsValues = (canDataReceived[2] << 4);  // shift the button values sent to led values
+      spi_io.Write(GPIO, newLedsValues);
+      break;
+    case 0x01:
+      // TODO HANDLE WRITE TO I2C LEDS
+      uint8_t newLedsValues;
+      newLedsValues = (canDataReceived[2] << 4);  // shift the button values sent to led values
+      i2c_io.Write(GPIO, newLedsValues);
+      break;
+    case 0x02:
+      // TODO SEND POTAR VALUE
+      break;
+    case 0x03:
+      // RECEIVED POTAR VALUE
+      break;
+  }
 }
