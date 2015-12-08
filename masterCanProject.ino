@@ -27,7 +27,7 @@ volatile int oldState = UNDEFINED_STATE;
 #define SPI_CAN_INTERRUPT_PIN 0
 
 /************ DEFINE THE NODE ID *********************/
-#define OWN_ID 4
+#define OWN_ID 2
 
 /**************** SETUP THE I2C/SPI/CAN OBJECTS ****************/
 MCP23008 i2c_io(MCP23008_ADDR);         // Init MCP23008
@@ -71,14 +71,14 @@ void setup() {
   lcd.begin(16, 2);
 
   //  SETUP SPI INTERRUPTS
-  spi_io.Write(IOCON, VAL23S08_IOCON | 0b00000010);  // Sets defaults for MCP23S08, in particular puts interrupt output open-drain
+  spi_io.Write(IOCON, VAL23S08_IOCON );  // Sets defaults for MCP23S08, in particular puts interrupt output open-drain
   spi_io.Write(IODIR, 0x0F);   // sets port direction for individual bits
   spi_io.Write(INTCON, 0x0F); // activate interrupts on the inputs (buttons)
   spi_io.Write(DEFVAL, 0x0F);  // DEFVAL  sets the default values for the pin (high state here). Interrupts occurs on a low state
-  spi_io.Write(GPINTEN, 0x0F);  // activate interrupts on the inputs (buttons)
+  spi_io.Write(GPINTEN, 0x00);  // activate interrupts on the inputs (buttons)
 
   //  SETUP I2C INTERRUPTS
-  i2c_io.Write(IOCON, VAL23S08_IOCON | 0b00000010);  // Sets defaults for MCP23S08, in particular puts interrupt output open-drain
+  i2c_io.Write(IOCON, VAL23S08_IOCON );  // Sets defaults for MCP23S08, in particular puts interrupt output open-drain
   i2c_io.Write(IODIR, 0x0F);   // sets port direction for individual bits
   i2c_io.Write(INTCON, 0x0F);  // interrupts are triggered when compared to DEFVAL values, not on pin-change
   i2c_io.Write(DEFVAL, 0x0F);  // DEFVAL  sets the default values for the pin (high state here). Interrupts occurs on a low state
@@ -140,6 +140,7 @@ void loop() {
     case UNDEFINED_STATE:
       lcd.clear();
       lcd.write("undefined state");
+      Serial.println(digitalRead(2));
       break;
 
     case SLAVE:
@@ -156,14 +157,16 @@ void loop() {
       sendIdsList();
       oldState = MASTER;
       state = NORMAL_MODE;
-
+      detachInterrupt(I2C_INTERRUPT_PIN);
       break;
 
     case NORMAL_MODE:
-      if (state != oldState)  Serial.write("normal mode\n"); // debug indicator
-      for (int i = 0; i < 8; i++) {
+      //if (state != oldState)  Serial.write("normal mode\n"); // debug indicator
+      /*for (int i = 0; i < 8; i++) {
         Serial.println(idsList[i]);
-      }
+      }*/
+      Serial.println(digitalRead(2));
+
       displayKeyboardSelection();
       break;
 
@@ -185,20 +188,27 @@ void loop() {
       Serial.print("Received list !");
       break;
 
+    case NORMAL_MODE_RECEIVED:
+      handleNormalModeMessage();
+      Serial.print("normal mode received\n");
+      break;
+
     default:
       if (state != oldState) Serial.write("huge problem !\n");
       break;
   }
-  Serial.println("\nMsgID = \n");
-  Serial.println(msgID - 0x100);
+  //  Serial.println("\nMsgID = \n");
+  //Serial.println(msgID - 0x100);
 }
 
 /************* INTERRUPT CALLBACK SPI/CAN ***************/
 void spiCanInterrupt() {
-  spiGpiosValues = spi_io.Read(GPIO);
-  if ( (spiGpiosValues & 0b00000111) != 0b00000111  && state == NORMAL_MODE) {
+  spiGpiosValues = spi_io.Read(INTCAP);
+     if ( (spiGpiosValues & 0b00000111) != 0b00000111  && state == NORMAL_MODE) {
+//  if ( spiGpiosValues != 0b00001111) {
+
     oldState = state;
-    state = SPI_INTERRUPT;
+    state = NORMAL_MODE_RECEIVED;
   } else {
 
     recSize = canutil.whichRxDataLength(0); // checks the number of bytes received in buffer 0 (max = 8)
@@ -233,20 +243,13 @@ void spiCanInterrupt() {
         }
         break;
 
-      case SPI_INTERRUPT:
-        handleSpiInterrupt();
-        break;
-
-      case NORMAL_MODE_RECEIVED:
-        handleNormalModeMessage();
-        break;
-
       default:
         state = -100;
         break;
     }
     can_dev.write(CANINTF, 0x00);  // Clears all interrupts flags
   }
+  spi_io.Read(INTCAP); // reclean flag (bouncing sucks)
 }
 
 /************* INTERRUPT "CALLBACK" I2C ***************/
@@ -257,7 +260,8 @@ void i2cInterruptCallback() {
 
 void i2cInterruptLogic() {
   Serial.write("entering interrupt I2C logic\n");
-  i2cGpiosValues = i2c_io.Read(GPIO);  // Reading the gpio actually clear the flag
+  delay(500);
+  i2cGpiosValues = i2c_io.Read(INTCAP);  // Reading the gpio actually clear the flag
   switch (oldState) {
     case UNDEFINED_STATE:
       if ( (i2cGpiosValues | 0b11110111) == 0b11110111 ) {  // test if SW9 has been pressed
@@ -279,6 +283,8 @@ void i2cInterruptLogic() {
       break;
   }
   Serial.write("leaving interrupt I2C logic\n");
+  Serial.print("state = ");
+  Serial.println(state);
 }
 
 void scanNetwork() {
@@ -423,15 +429,15 @@ void handleNormalModeMessage() {
   switch (canDataReceived[1]) { // 1 = opCode = cquon fait
     case 0x00:
       // TODO HANDLE WRITE TO SPI LEDS
-      uint8_t newLedsValues;
-      newLedsValues = (canDataReceived[2] << 4);  // shift the button values sent to led values
-      spi_io.Write(GPIO, newLedsValues);
+      uint8_t newSpiLedsValues;
+      newSpiLedsValues = (canDataReceived[2] << 4);  // shift the button values sent to led values
+      spi_io.Write(GPIO, newSpiLedsValues);
       break;
     case 0x01:
       // TODO HANDLE WRITE TO I2C LEDS
-      uint8_t newLedsValues;
-      newLedsValues = (canDataReceived[2] << 4);  // shift the button values sent to led values
-      i2c_io.Write(GPIO, newLedsValues);
+      uint8_t newI2cLedsValues;
+      newI2cLedsValues = (canDataReceived[2] << 4);  // shift the button values sent to led values
+      i2c_io.Write(GPIO, newI2cLedsValues);
       break;
     case 0x02:
       // TODO SEND POTAR VALUE
