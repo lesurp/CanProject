@@ -20,6 +20,7 @@
 volatile int state = UNDEFINED_STATE;
 volatile int oldState = UNDEFINED_STATE;
 
+
 /************* TODO : WILL PROBABLY HAVE TO DEFINE SUBSTATE VARIABLE *****************/
 
 /************** PIN USED  FOR THE INTERRUPTS *************/
@@ -38,6 +39,7 @@ LiquidCrystal  lcd(15, 14, 4, 5, 6, 7);
 /************* DECLARE VOLATILE VARIABLE FOR THE GPIOS RAEADS, AND FORWARD DECLARE FUNCTIONS ***************/
 volatile uint8_t i2cGpiosValues;
 volatile uint8_t spiGpiosValues;
+volatile uint8_t oldSpioGpiosValues;
 uint8_t txstatus;
 volatile uint8_t opmode;
 volatile uint8_t idsList[8];
@@ -157,15 +159,19 @@ void loop() {
       sendIdsList();
       oldState = MASTER;
       state = NORMAL_MODE;
-      detachInterrupt(I2C_INTERRUPT_PIN);
+      //detachInterrupt(I2C_INTERRUPT_PIN);
       break;
 
     case NORMAL_MODE:
-      //if (state != oldState)  Serial.write("normal mode\n"); // debug indicator
-      /*for (int i = 0; i < 8; i++) {
-        Serial.println(idsList[i]);
-      }*/
-      Serial.println(digitalRead(2));
+      spiGpiosValues = spi_io.Read(GPIO);
+      if ( oldSpioGpiosValues != spiGpiosValues ) {
+        oldSpioGpiosValues = spiGpiosValues;
+        if ( (spiGpiosValues & 0b00000111) != 0b00000111 ) {
+          oldState = state;
+          state = SPI_INTERRUPT;
+        }
+      }
+      Serial.println(spiGpiosValues);
 
       displayKeyboardSelection();
       break;
@@ -191,6 +197,15 @@ void loop() {
     case NORMAL_MODE_RECEIVED:
       handleNormalModeMessage();
       Serial.print("normal mode received\n");
+      oldState = state;
+      state = NORMAL_MODE;
+      break;
+
+    case SPI_INTERRUPT:
+      handleSpiInterrupt();
+      oldState = state;
+      state = NORMAL_MODE;
+      Serial.println("spi int !!!");
       break;
 
     default:
@@ -203,53 +218,46 @@ void loop() {
 
 /************* INTERRUPT CALLBACK SPI/CAN ***************/
 void spiCanInterrupt() {
-  spiGpiosValues = spi_io.Read(INTCAP);
-     if ( (spiGpiosValues & 0b00000111) != 0b00000111  && state == NORMAL_MODE) {
-//  if ( spiGpiosValues != 0b00001111) {
 
-    oldState = state;
-    state = NORMAL_MODE_RECEIVED;
-  } else {
 
-    recSize = canutil.whichRxDataLength(0); // checks the number of bytes received in buffer 0 (max = 8)
-    for (int i = 0; i < recSize; i++) { // gets the bytes
-      canDataReceived[i] = canutil.receivedDataValue(0, i);
-    }
-    msgID = canutil.whichStdID(0);
 
-    switch (state) {
-      case UNDEFINED_STATE:
-        if (msgID == 0x100) {
-          oldState = state;
-          state = RECEIVED_WAKE_UP;
-        }
-        break;
-
-      case SLAVE:
-        if (msgID == 0x102) {
-          oldState = state;
-          state = RECEIVED_LIST;
-        }
-        break;
-
-      case NORMAL_MODE:// TODO : ALL THE WEIRD SHIT
-        oldState = state;
-        state = NORMAL_MODE_RECEIVED;
-        break;
-
-      case MASTER:
-        if (msgID == 0x101) {
-          idsList[storedIdsNumber++] = canutil.receivedDataValue(0, 0);
-        }
-        break;
-
-      default:
-        state = -100;
-        break;
-    }
-    can_dev.write(CANINTF, 0x00);  // Clears all interrupts flags
+  recSize = canutil.whichRxDataLength(0); // checks the number of bytes received in buffer 0 (max = 8)
+  for (int i = 0; i < recSize; i++) { // gets the bytes
+    canDataReceived[i] = canutil.receivedDataValue(0, i);
   }
-  spi_io.Read(INTCAP); // reclean flag (bouncing sucks)
+  msgID = canutil.whichStdID(0);
+
+  switch (state) {
+    case UNDEFINED_STATE:
+      if (msgID == 0x100) {
+        oldState = state;
+        state = RECEIVED_WAKE_UP;
+      }
+      break;
+
+    case SLAVE:
+      if (msgID == 0x102) {
+        oldState = state;
+        state = RECEIVED_LIST;
+      }
+      break;
+
+    case NORMAL_MODE:// TODO : ALL THE WEIRD SHIT
+      oldState = state;
+      state = NORMAL_MODE_RECEIVED;
+      break;
+
+    case MASTER:
+      if (msgID == 0x101) {
+        idsList[storedIdsNumber++] = canDataReceived[0];
+      }
+      break;
+
+    default:
+      state = -100;
+      break;
+  }
+  can_dev.write(CANINTF, 0x00);  // Clears all interrupts flags
 }
 
 /************* INTERRUPT "CALLBACK" I2C ***************/
@@ -383,7 +391,7 @@ void displayKeyboardSelection() {
 
 }
 
-void   handleSpiInterrupt() {
+void handleSpiInterrupt() {
   uint8_t interestingValues =  spiGpiosValues & 0x00000111;
   if ( interestingValues > 3) {
     // TODO SW6
@@ -425,7 +433,8 @@ void handleNormalModeMessage() {
     return;
   }
   uint16_t sender = msgID - 0x200;
-
+Serial.print("op code is :");
+Serial.println(canDataReceived[1]);
   switch (canDataReceived[1]) { // 1 = opCode = cquon fait
     case 0x00:
       // TODO HANDLE WRITE TO SPI LEDS
