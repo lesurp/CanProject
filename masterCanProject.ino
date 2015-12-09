@@ -29,7 +29,7 @@ volatile int oldState = UNDEFINED_STATE;
 #define SPI_CAN_INTERRUPT_PIN 0
 
 /************ DEFINE THE NODE ID *********************/
-#define OWN_ID 2
+#define OWN_ID 3
 
 /**************** SETUP THE I2C/SPI/CAN OBJECTS ****************/
 MCP23008 i2c_io(MCP23008_ADDR);         // Init MCP23008
@@ -403,16 +403,16 @@ void displayKeyboardSelection() {
 }
 
 void handleSpiInterrupt() {
-  uint8_t interestingValues =  spiGpiosValues & 0x00000111;
+  uint8_t interestingValues =  spiGpiosValues & 0b00000111;
   Serial.print("interesting value = ");
   Serial.println(interestingValues);
-  if ( interestingValues < 1) {
+  if ( interestingValues == 6) {
     //TODO SW8
     sendI2cButtonsValues(0x00);
-  } else if (interestingValues < 2) {
+  } else if (interestingValues == 5) {
     //TODO SW7
     sendI2cButtonsValues(0x01);
-  } else if (interestingValues < 4) {
+  } else if (interestingValues == 3) {
     // TODO SW6
     askPotentiometerValue();
   }
@@ -485,7 +485,7 @@ void askPotentiometerValue() {
   canutil.setTxBufferID(0x200, 0, 0, 0); // sets the message ID, specifies standard message (i.e. short ID) with buffer 0
   canutil.setTxBufferDataField(message, 0);   // fills TX buffer
 
-  canutil.messageTransmitRequest(0, 1, 3); // requests transmission of buffer 0 with highest priority*/
+  canutil.messageTransmitRequest(0, 1, 3); // requests transmission of buffer 0 with highest priority
   do {
     txstatus = 0;
     txstatus = canutil.isTxError(0);  // checks tx error
@@ -507,7 +507,7 @@ void      sendPotentiometerValue() {
   canutil.setTxBufferID(0x200, 0, 0, 0); // sets the message ID, specifies standard message (i.e. short ID) with buffer 0
   canutil.setTxBufferDataField(message, 0);   // fills TX buffer
 
-  canutil.messageTransmitRequest(0, 1, 3); // requests transmission of buffer 0 with highest priority*/
+  canutil.messageTransmitRequest(0, 1, 3); // requests transmission of buffer 0 with highest priority
   do {
     txstatus = 0;
     txstatus = canutil.isTxError(0);  // checks tx error
