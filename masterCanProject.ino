@@ -29,7 +29,7 @@ volatile int oldState = UNDEFINED_STATE;
 #define SPI_CAN_INTERRUPT_PIN 0
 
 /************ DEFINE THE NODE ID *********************/
-#define OWN_ID 3
+#define OWN_ID 2
 
 /**************** SETUP THE I2C/SPI/CAN OBJECTS ****************/
 MCP23008 i2c_io(MCP23008_ADDR);         // Init MCP23008
@@ -64,7 +64,7 @@ void sendIdsList();
 void displayKeyboardSelection();
 void sendI2cButtonsValues(uint8_t opCode);
 void handleSpiInterrupt();
-void sendPotentiometerValue();
+void sendPotentiometerValue(uint8_t sender);
 void askPotentiometerValue();
 void handlePotentiometerValue();
 /********************** SETUP **********************/
@@ -430,7 +430,7 @@ void sendI2cButtonsValues(uint8_t opCode) {
   Serial.print("op code shoudl be:");
   Serial.println(opCode);
   canutil.setTxBufferDataLength(0, 3 , 0); // TX normal data, 1 byte long, with buffer 0
-  canutil.setTxBufferID(0x200, 0, 0, 0); // sets the message ID, specifies standard message (i.e. short ID) with buffer 0
+  canutil.setTxBufferID(0x200+OWN_ID, 0, 0, 0); // sets the message ID, specifies standard message (i.e. short ID) with buffer 0
   canutil.setTxBufferDataField(message, 0);   // fills TX buffer
 
   canutil.messageTransmitRequest(0, 1, 3); // requests transmission of buffer 0 with highest priority*/
@@ -469,7 +469,7 @@ void handleNormalModeMessage() {
       break;
     case 0x02:
       // TODO SEND POTAR VALUE
-      sendPotentiometerValue();
+      sendPotentiometerValue(sender);
       break;
     case 0x03:
       handlePotentiometerValue();
@@ -482,7 +482,7 @@ void askPotentiometerValue() {
   message[0] = idsList[currentId];
   message[1] = 0x02;
   canutil.setTxBufferDataLength(0, 2 , 0); // TX normal data, 1 byte long, with buffer 0
-  canutil.setTxBufferID(0x200, 0, 0, 0); // sets the message ID, specifies standard message (i.e. short ID) with buffer 0
+  canutil.setTxBufferID(0x200+OWN_ID, 0, 0, 0); // sets the message ID, specifies standard message (i.e. short ID) with buffer 0
   canutil.setTxBufferDataField(message, 0);   // fills TX buffer
 
   canutil.messageTransmitRequest(0, 1, 3); // requests transmission of buffer 0 with highest priority
@@ -496,15 +496,15 @@ void askPotentiometerValue() {
   while (txstatus != 0);
 }
 
-void      sendPotentiometerValue() {
+void sendPotentiometerValue(uint8_t sender) {
   uint8_t message[8];
-  message[0] = idsList[currentId];
+  message[0] = sender;
   message[1] = 0x03;
   int potentiometerValue = analogRead(3);
   message[2] = potentiometerValue & 0xFF;
   message[3] = (potentiometerValue >> 8);
   canutil.setTxBufferDataLength(0, 4 , 0); // TX normal data, 1 byte long, with buffer 0
-  canutil.setTxBufferID(0x200, 0, 0, 0); // sets the message ID, specifies standard message (i.e. short ID) with buffer 0
+  canutil.setTxBufferID(0x200+OWN_ID, 0, 0, 0); // sets the message ID, specifies standard message (i.e. short ID) with buffer 0
   canutil.setTxBufferDataField(message, 0);   // fills TX buffer
 
   canutil.messageTransmitRequest(0, 1, 3); // requests transmission of buffer 0 with highest priority
@@ -518,8 +518,8 @@ void      sendPotentiometerValue() {
   while (txstatus != 0);
 }
 
-void      handlePotentiometerValue() {
+void handlePotentiometerValue() {
   int newDacValue = canDataReceived[2] + (canDataReceived[3] << 8);
-  dac_io.setVoltage( newDacValue,false);
+  dac_io.setVoltage(newDacValue,false);
 }
 
