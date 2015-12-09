@@ -62,8 +62,6 @@ void sendIdsList();
 void displayKeyboardSelection();
 void sendI2cButtonsValues(uint8_t opCode);
 void   handleSpiInterrupt();
-void sendI2cButtonsValues2(uint8_t opCode);
-void sendI2cButtonsValues1(uint8_t opCode);
 /********************** SETUP **********************/
 void setup() {
 
