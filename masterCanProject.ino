@@ -62,6 +62,8 @@ void sendIdsList();
 void displayKeyboardSelection();
 void sendI2cButtonsValues(uint8_t opCode);
 void   handleSpiInterrupt();
+void sendI2cButtonsValues2(uint8_t opCode);
+void sendI2cButtonsValues1(uint8_t opCode);
 /********************** SETUP **********************/
 void setup() {
 
@@ -165,12 +167,13 @@ void loop() {
     case NORMAL_MODE:
       spiGpiosValues = spi_io.Read(GPIO);
       if ( oldSpioGpiosValues != spiGpiosValues ) {
-              Serial.println(spiGpiosValues);
+        Serial.print(" SPI GPIO VALUES: ");
+        Serial.println(spiGpiosValues);
         oldSpioGpiosValues = spiGpiosValues;
         if ( (spiGpiosValues & 0b00000111) != 0b00000111 ) {
           oldState = state;
           state = SPI_INTERRUPT;
-          
+
         }
       }
 
@@ -394,17 +397,17 @@ void displayKeyboardSelection() {
 
 void handleSpiInterrupt() {
   uint8_t interestingValues =  spiGpiosValues & 0x00000111;
-  if ( interestingValues > 3) {
+  Serial.print("interesting value = ");
+  Serial.println(interestingValues);
+  if ( interestingValues < 1) {
+    //TODO SW8
+    sendI2cButtonsValues(0x00);
+  } else if (interestingValues < 2) {
+    //TODO SW7
+    sendI2cButtonsValues(0x01);
+  } else if (interestingValues < 4) {
     // TODO SW6
 
-  } else if (interestingValues > 1) {
-    //TODO SW7
-    uint8_t opCode = 0x01;
-    sendI2cButtonsValues(opCode);
-  } else {
-    //TODO SW8
-    uint8_t opCode = 0x00;
-    sendI2cButtonsValues(opCode);
   }
 }
 
@@ -413,6 +416,12 @@ void sendI2cButtonsValues(uint8_t opCode) {
   message[0] = idsList[currentId];
   message[1] = opCode;
   message[2] = i2c_io.Read(GPIO);
+  Serial.print("target id is:");
+  Serial.println(message[0]);
+  Serial.print("op code is:");
+  Serial.println(message[1]);
+  Serial.print("op code shoudl be:");
+  Serial.println(opCode);
   canutil.setTxBufferDataLength(0, 3 , 0); // TX normal data, 1 byte long, with buffer 0
   canutil.setTxBufferID(0x200, 0, 0, 0); // sets the message ID, specifies standard message (i.e. short ID) with buffer 0
   canutil.setTxBufferDataField(message, 0);   // fills TX buffer
@@ -429,13 +438,15 @@ void sendI2cButtonsValues(uint8_t opCode) {
 }
 
 
+
+
 void handleNormalModeMessage() {
   if ( canDataReceived[0] != OWN_ID ) {  // 0 = recipioent node id = our own id
     return;
   }
   uint16_t sender = msgID - 0x200;
-Serial.print("op code is :");
-Serial.println(canDataReceived[1]);
+  Serial.print("op code is :");
+  Serial.println(canDataReceived[1]);
   switch (canDataReceived[1]) { // 1 = opCode = cquon fait
     case 0x00:
       // TODO HANDLE WRITE TO SPI LEDS
