@@ -165,13 +165,14 @@ void loop() {
     case NORMAL_MODE:
       spiGpiosValues = spi_io.Read(GPIO);
       if ( oldSpioGpiosValues != spiGpiosValues ) {
+              Serial.println(spiGpiosValues);
         oldSpioGpiosValues = spiGpiosValues;
         if ( (spiGpiosValues & 0b00000111) != 0b00000111 ) {
           oldState = state;
           state = SPI_INTERRUPT;
+          
         }
       }
-      Serial.println(spiGpiosValues);
 
       displayKeyboardSelection();
       break;
