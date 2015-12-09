@@ -5,6 +5,7 @@
 #include <Wire.h>
 #include <SPI.h>
 #include <LiquidCrystal.h>
+#include "Adafruit_MCP4725.h"
 
 /********* VALUES USED FOR THE STATE MACHINE ************/
 #define I2C_INTERRUPT -1
@@ -36,6 +37,7 @@ MCP23S08 spi_io(MCP23S08_ADDR, 10);        // Init MCP23S08
 MCP2510  can_dev (9); // defines pb1 (arduino pin9) as the _CS pin for MCP2510
 Canutil  canutil(can_dev);
 LiquidCrystal  lcd(15, 14, 4, 5, 6, 7);
+Adafruit_MCP4725 dac_io;
 /************* DECLARE VOLATILE VARIABLE FOR THE GPIOS RAEADS, AND FORWARD DECLARE FUNCTIONS ***************/
 volatile uint8_t i2cGpiosValues;
 volatile uint8_t spiGpiosValues;
@@ -61,7 +63,10 @@ bool getIdsList();
 void sendIdsList();
 void displayKeyboardSelection();
 void sendI2cButtonsValues(uint8_t opCode);
-void   handleSpiInterrupt();
+void handleSpiInterrupt();
+void sendPotentiometerValue();
+void askPotentiometerValue();
+void handlePotentiometerValue();
 /********************** SETUP **********************/
 void setup() {
 
@@ -71,6 +76,10 @@ void setup() {
 
   // SETUP UP LCD
   lcd.begin(16, 2);
+
+  // SETUP DAC
+  uint8_t mcpAddress = 0b11000000;
+  dac_io.begin(mcpAddress);
 
   //  SETUP SPI INTERRUPTS
   spi_io.Write(IOCON, VAL23S08_IOCON );  // Sets defaults for MCP23S08, in particular puts interrupt output open-drain
@@ -405,7 +414,7 @@ void handleSpiInterrupt() {
     sendI2cButtonsValues(0x01);
   } else if (interestingValues < 4) {
     // TODO SW6
-
+    askPotentiometerValue();
   }
 }
 
@@ -460,9 +469,57 @@ void handleNormalModeMessage() {
       break;
     case 0x02:
       // TODO SEND POTAR VALUE
+      sendPotentiometerValue();
       break;
     case 0x03:
-      // RECEIVED POTAR VALUE
+      handlePotentiometerValue();
       break;
   }
 }
+
+void askPotentiometerValue() {
+  uint8_t message[8];
+  message[0] = idsList[currentId];
+  message[1] = 0x02;
+  canutil.setTxBufferDataLength(0, 2 , 0); // TX normal data, 1 byte long, with buffer 0
+  canutil.setTxBufferID(0x200, 0, 0, 0); // sets the message ID, specifies standard message (i.e. short ID) with buffer 0
+  canutil.setTxBufferDataField(message, 0);   // fills TX buffer
+
+  canutil.messageTransmitRequest(0, 1, 3); // requests transmission of buffer 0 with highest priority*/
+  do {
+    txstatus = 0;
+    txstatus = canutil.isTxError(0);  // checks tx error
+    txstatus = txstatus + canutil.isArbitrationLoss(0);  // checks for arbitration loss
+    txstatus = txstatus + canutil.isMessageAborted(0);  // ckecks for message abort
+    txstatus = txstatus + canutil.isMessagePending(0);   // checks transmission
+  }
+  while (txstatus != 0);
+}
+
+void      sendPotentiometerValue() {
+  uint8_t message[8];
+  message[0] = idsList[currentId];
+  message[1] = 0x03;
+  int potentiometerValue = analogRead(3);
+  message[2] = potentiometerValue & 0xFF;
+  message[3] = (potentiometerValue >> 8);
+  canutil.setTxBufferDataLength(0, 4 , 0); // TX normal data, 1 byte long, with buffer 0
+  canutil.setTxBufferID(0x200, 0, 0, 0); // sets the message ID, specifies standard message (i.e. short ID) with buffer 0
+  canutil.setTxBufferDataField(message, 0);   // fills TX buffer
+
+  canutil.messageTransmitRequest(0, 1, 3); // requests transmission of buffer 0 with highest priority*/
+  do {
+    txstatus = 0;
+    txstatus = canutil.isTxError(0);  // checks tx error
+    txstatus = txstatus + canutil.isArbitrationLoss(0);  // checks for arbitration loss
+    txstatus = txstatus + canutil.isMessageAborted(0);  // ckecks for message abort
+    txstatus = txstatus + canutil.isMessagePending(0);   // checks transmission
+  }
+  while (txstatus != 0);
+}
+
+void      handlePotentiometerValue() {
+  int newDacValue = canDataReceived[2] + (canDataReceived[3] << 8);
+  dac_io.setVoltage( newDacValue,false);
+}
+
